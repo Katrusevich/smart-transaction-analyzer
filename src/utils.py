@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def ensure_nltk_resources():
     """Завантажує необхідні NLTK ресурси, якщо вони ще не встановлені."""
-    for resource in ['punkt_tab', 'stopwords']:  # Замінено 'punkt' на 'punkt_tab'
+    for resource in ['punkt_tab', 'stopwords']:
         try:
             nltk.data.find(
                 f'tokenizers/{resource}' if resource == 'punkt_tab' else f'corpora/{resource}')
@@ -46,12 +46,6 @@ UKRAINIAN_STOPWORDS = {
 def load_and_preprocess_data(file_path):
     """
     Завантажує дані транзакцій з CSV, виконує базову передобробку та додає часові ознаки.
-
-    Параметри:
-    file_path (str): Шлях до CSV-файлу.
-
-    Повертає:
-    pandas.DataFrame: Оброблений DataFrame або None у разі помилки.
     """
     if not os.path.exists(file_path):
         logger.error(f"Файл {file_path} не знайдено.")
@@ -66,7 +60,6 @@ def load_and_preprocess_data(file_path):
             f"Помилка при завантаженні CSV: {e}")
         return None
 
-    # Перетворення 'date' у формат datetime
     try:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         if df['date'].isna().any():
@@ -77,10 +70,7 @@ def load_and_preprocess_data(file_path):
             f"Помилка при обробці колонки 'date': {e}")
         return None
 
-    # Перетворення 'amount' у числовий формат
     df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
-
-    # Обробка пропущених значень
     initial_len = len(df)
     df.dropna(subset=['date', 'amount', 'description',
               'category'], inplace=True)
@@ -88,49 +78,32 @@ def load_and_preprocess_data(file_path):
         logger.warning(
             f"Видалено {initial_len - len(df)} рядків через пропущені значення.")
 
-    # Додавання часових ознак
     df['hour_of_day'] = df['date'].dt.hour
-    # 0=понеділок, 6=неділя
     df['day_of_week'] = df['date'].dt.dayofweek
     df['month'] = df['date'].dt.month
     df['day_of_month'] = df['date'].dt.day
-    df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(
-        int)  # 1 для вихідних, 0 для буднів
+    df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
 
     logger.info(
         "Часові ознаки додано: hour_of_day, day_of_week, month, day_of_month, is_weekend")
     return df
 
 
-def clean_text(text, language='ukrainian', remove_stopwords=True):
+def clean_text(text, language='ukrainian', remove_stopwords=True, keep_keywords=None):
     """
     Очищає текст транзакції: нижній регістр, видалення пунктуації, цифр, і, опціонально, стоп-слів.
-
-    Параметри:
-    text (str): Вхідний текст для очищення.
-    language (str): Мова для стоп-слів ('ukrainian' або 'english'). За замовчуванням 'ukrainian'.
-    remove_stopwords (bool): Якщо True, видаляє стоп-слова.
-
-    Повертає:
-    str: Очищений текст.
+    Дозволяє зберегти ключові слова через keep_keywords.
     """
     if not isinstance(text, str):
         logger.warning(
             f"Некоректний тип вхідного тексту: {type(text)}. Повертається порожній рядок.")
         return ""
 
-    # Приведення до нижнього регістру
     text = text.lower()
-
-    # Видалення пунктуації
     text = text.translate(str.maketrans('', '', string.punctuation))
-
-    # Видалення цифр
     text = re.sub(r'\d+', '', text)
 
-    # Токенізація
     try:
-        # Використовуємо англійську токенізацію
         word_tokens = word_tokenize(text, language='english')
     except LookupError as e:
         logger.error(
@@ -142,40 +115,31 @@ def clean_text(text, language='ukrainian', remove_stopwords=True):
         return text
 
     if remove_stopwords:
-        if language == 'ukrainian':
-            stop_words_set = UKRAINIAN_STOPWORDS
-        elif language == 'english':
+        stop_words_set = UKRAINIAN_STOPWORDS
+        if language == 'english':
             try:
                 stop_words_set = set(stopwords.words('english'))
             except LookupError:
                 logger.warning(
                     "Англійські стоп-слова NLTK не завантажені. Пропускаємо видалення стоп-слів.")
                 stop_words_set = set()
-        else:
-            logger.warning(
-                f"Мова '{language}' не підтримується. Пропускаємо видалення стоп-слів.")
-            stop_words_set = set()
 
-        filtered_text = [
-            w for w in word_tokens if w not in stop_words_set and len(w) > 1]
+        if keep_keywords:
+            keep_keywords_set = set(k.lower() for k in keep_keywords)
+            filtered_text = [w for w in word_tokens if (
+                w not in stop_words_set or w in keep_keywords_set) and len(w) > 1]
+        else:
+            filtered_text = [
+                w for w in word_tokens if w not in stop_words_set and len(w) > 1]
     else:
         filtered_text = [w for w in word_tokens if len(w) > 1]
 
     return " ".join(filtered_text).strip()
 
 
-def preprocess_transactions(df, description_column='description', language='ukrainian', remove_stopwords=True):
+def preprocess_transactions(df, description_column='description', language='ukrainian', remove_stopwords=True, keep_keywords=None):
     """
     Застосовує функцію clean_text до колонки з описами в DataFrame.
-
-    Параметри:
-    df (pd.DataFrame): Вхідний DataFrame.
-    description_column (str): Назва колонки, що містить описи транзакцій.
-    language (str): Мова для стоп-слів ('ukrainian' або 'english').
-    remove_stopwords (bool): Чи видаляти стоп-слова.
-
-    Повертає:
-    pd.DataFrame: DataFrame з новою колонкою 'cleaned_description' або None у разі помилки.
     """
     if description_column not in df.columns:
         logger.error(
@@ -186,8 +150,8 @@ def preprocess_transactions(df, description_column='description', language='ukra
         logger.info(
             f"Застосовуємо очищення тексту до колонки '{description_column}'...")
         df['cleaned_description'] = df[description_column].apply(
-            lambda x: clean_text(x, language=language,
-                                 remove_stopwords=remove_stopwords)
+            lambda x: clean_text(
+                x, language=language, remove_stopwords=remove_stopwords, keep_keywords=keep_keywords)
         )
         logger.info(
             "Очищення тексту завершено. Створено нову колонку 'cleaned_description'.")
