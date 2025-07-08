@@ -3,7 +3,7 @@ import pandas as pd
 import logging
 import joblib
 import numpy as np
-from src.ai_analyzer import train_category_model, predict_category, train_anomaly_model, predict_anomaly, save_model, load_model, add_anomaly_features
+from src.ai_analyzer import train_category_model, predict_category, train_anomaly_model, predict_anomaly, save_model, load_model
 from src.utils import load_and_preprocess_data, preprocess_transactions, clean_text
 
 # Налаштування логування
@@ -74,10 +74,15 @@ def run_ai_tests():
             if loaded_cat_model and loaded_vectorizer and loaded_label_encoder:
                 logger.info(
                     "Тест 1: Модель категоризації збережена та завантажена.")
+                pred_original = predict_category(
+                    "Оплата комунальних послуг", category_model, vectorizer, label_encoder, use_transformers=False)
                 pred_loaded = predict_category("Оплата комунальних послуг",
                                                loaded_cat_model, loaded_vectorizer, loaded_label_encoder, use_transformers=False)
                 logger.info(
+                    f"Оригінальна модель: 'Оплата комунальних послуг' -> Категорія: {pred_original}")
+                logger.info(
                     f"Завантажена модель: 'Оплата комунальних послуг' -> Категорія: {pred_loaded}")
+                assert pred_original == pred_loaded, "Прогнози оригінальної та завантаженої моделей не збігаються."
                 assert pred_loaded != "Невідома", f"Завантажена модель повернула 'Невідома' для 'Оплата комунальних послуг'."
             else:
                 logger.error(
@@ -97,35 +102,34 @@ def run_ai_tests():
         "\n--- Тест 2: Навчання та передбачення аномалій ---")
     initial_features_for_anomaly = [
         'amount', 'hour_of_day', 'day_of_week', 'month', 'is_weekend']
-    # Змінено на None для автоматичного розрахунку
     anomaly_model, anomaly_scaler = train_anomaly_model(
         df_cleaned, initial_features_for_anomaly, contamination=None)
     if anomaly_model and anomaly_scaler:
         logger.info("Тест 2: Модель аномалій навчена.")
 
-        df_anomaly_test = add_anomaly_features(df_cleaned.copy())
-        all_anomaly_features = initial_features_for_anomaly + \
-            ['mean_amount_by_category', 'amount_deviation',
-                'transaction_count_per_day']
-
-        # Обробка відсутніх даних
-        if df_anomaly_test['is_anomaly'].eq(False).any():
-            normal_sample = df_anomaly_test[df_anomaly_test['is_anomaly'] == False].sample(
-                1, random_state=42)[all_anomaly_features].iloc[0]
+        # Використовуємо лише базові ознаки, оскільки add_anomaly_features видалено
+        if 'is_anomaly' in df_cleaned.columns and df_cleaned['is_anomaly'].eq(False).any():
+            normal_sample = df_cleaned[df_cleaned['is_anomaly'] == False].sample(
+                1, random_state=42)[initial_features_for_anomaly].iloc[0]
         else:
             logger.warning(
                 "Немає нормальних транзакцій для тестування. Використано середнє значення.")
-            normal_sample = df_anomaly_test[all_anomaly_features].mean(
+            normal_sample = df_cleaned[initial_features_for_anomaly].mean(
             ).to_frame().T
 
-        if df_anomaly_test['is_anomaly'].eq(True).any():
-            anomaly_sample = df_anomaly_test[df_anomaly_test['is_anomaly'] == True].sample(
-                1, random_state=42)[all_anomaly_features].iloc[0]
+        if 'is_anomaly' in df_cleaned.columns and df_cleaned['is_anomaly'].eq(True).any():
+            anomaly_sample = df_cleaned[df_cleaned['is_anomaly'] == True].sample(
+                1, random_state=42)[initial_features_for_anomaly].iloc[0]
         else:
             logger.warning(
-                "Немає аномальних транзакцій для тестування. Використано випадкове значення.")
-            anomaly_sample = df_anomaly_test[all_anomaly_features].sample(
-                1, random_state=42).iloc[0]
+                "Немає аномальних транзакцій для тестування. Використано випадкове значення з великою сумою.")
+            anomaly_sample = pd.Series({
+                'amount': -50000.0,  # Велика сума для імітації аномалії
+                'hour_of_day': df_cleaned['hour_of_day'].sample(1, random_state=42).iloc[0],
+                'day_of_week': df_cleaned['day_of_week'].sample(1, random_state=42).iloc[0],
+                'month': df_cleaned['month'].sample(1, random_state=42).iloc[0],
+                'is_weekend': df_cleaned['is_weekend'].sample(1, random_state=42).iloc[0]
+            }, index=initial_features_for_anomaly)
 
         pred_normal = predict_anomaly(
             normal_sample, anomaly_model, anomaly_scaler)
@@ -146,10 +150,15 @@ def run_ai_tests():
             if loaded_anom_model and loaded_scaler:
                 logger.info(
                     "Тест 2: Модель аномалій збережена та завантажена.")
+                pred_original = predict_anomaly(
+                    normal_sample, anomaly_model, anomaly_scaler)
                 pred_loaded_anom = predict_anomaly(
                     normal_sample, loaded_anom_model, loaded_scaler)
                 logger.info(
+                    f"Оригінальна модель: Нормальна транзакція аномальна? {pred_original}")
+                logger.info(
                     f"Завантажена модель: Нормальна транзакція аномальна? {pred_loaded_anom}")
+                assert pred_original == pred_loaded_anom, "Прогнози оригінальної та завантаженої моделей аномалій не збігаються."
                 assert not pred_loaded_anom, "Завантажена модель помилково класифікувала нормальну транзакцію як аномальну."
             else:
                 logger.error(

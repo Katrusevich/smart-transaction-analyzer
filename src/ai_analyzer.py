@@ -149,64 +149,32 @@ def predict_category(text, model, vectorizer_or_name, label_encoder=None, use_tr
     return prediction
 
 
-def add_anomaly_features(df):
-    """
-    Додає нові ознаки для виявлення аномалій.
-    """
-    if df.empty:
-        logger.warning(
-            "DataFrame порожній, неможливо додати ознаки аномалій.")
-        return df
-
-    if 'category' not in df.columns or 'date' not in df.columns or 'amount' not in df.columns:
-        logger.error(
-            "Потрібні колонки 'category', 'date' та 'amount'.")
-        return df
-
-    df_copy = df.copy()
-    if not df_copy['category'].empty and len(df_copy['category'].unique()) > 1:
-        df_copy['mean_amount_by_category'] = df_copy.groupby(
-            'category')['amount'].transform('mean')
-        df_copy['amount_deviation'] = df_copy['amount'] - \
-            df_copy['mean_amount_by_category']
-    else:
-        df_copy['mean_amount_by_category'] = df_copy['amount'].mean()
-        df_copy['amount_deviation'] = df_copy['amount'] - \
-            df_copy['mean_amount_by_category']
-        logger.warning(
-            "Недостатньо категорій для 'mean_amount_by_category'. Використано загальне середнє.")
-
-    df_copy['date_only'] = df_copy['date'].dt.date
-    df_copy['transaction_count_per_day'] = df_copy.groupby(
-        'date_only')['date_only'].transform('count')
-    df_copy.drop('date_only', axis=1, inplace=True)
-
-    logger.info(
-        "Додано ознаки: mean_amount_by_category, amount_deviation, transaction_count_per_day.")
-    return df_copy
-
-
-def train_anomaly_model(df, initial_features_for_anomaly, contamination=None):
+def train_anomaly_model(df, features_to_use_for_anomaly, contamination=None):
     """
     Навчає модель для виявлення аномалій (Isolation Forest).
     """
-    df_extended = add_anomaly_features(df.copy())
-    features_for_anomaly = initial_features_for_anomaly + \
-        ['mean_amount_by_category', 'amount_deviation', 'transaction_count_per_day']
+    logger.info(
+        f"Починаємо навчання моделі аномалій на {len(df)} семплах з ознаками: {features_to_use_for_anomaly}...")
 
-    for col in features_for_anomaly:
-        if col not in df_extended.columns:
-            logger.error(f"Відсутня колонка: '{col}'.")
-            return None, None
+    # Вибираємо тільки ті ознаки, які були передані
+    X = df[features_to_use_for_anomaly].copy()
 
-    X_anomaly = df_extended[features_for_anomaly]
+    # Перевірка наявності всіх необхідних колонок
+    missing_columns = [
+        col for col in features_to_use_for_anomaly if col not in df.columns]
+    if missing_columns:
+        logger.error(f"Відсутні колонки: {missing_columns}")
+        return None, None
+
+    # Нормалізація ознак
     scaler = StandardScaler()
-    X_anomaly_scaled = scaler.fit_transform(X_anomaly)
+    X_scaled = scaler.fit_transform(X)
     logger.info(
         "Ознаки для аномалій нормалізовано.")
 
-    if contamination is None and 'is_anomaly' in df_extended.columns:
-        contamination = df_extended['is_anomaly'].mean()
+    # Розрахунок contamination, якщо не задано
+    if contamination is None and 'is_anomaly' in df.columns:
+        contamination = df['is_anomaly'].mean()
         logger.info(
             f"Параметр contamination розрахований автоматично: {contamination:.4f}")
     elif contamination is None:
@@ -214,12 +182,13 @@ def train_anomaly_model(df, initial_features_for_anomaly, contamination=None):
         logger.info(
             f"Параметр contamination не задано і немає 'is_anomaly'. Використано значення за замовчуванням: {contamination}")
 
+    # Навчання моделі IsolationForest
     model = IsolationForest(
         random_state=42, contamination=contamination, n_jobs=-1)
     logger.info(
-        f"Починаємо навчання моделі аномалій на {len(X_anomaly_scaled)} семплах...")
+        f"Починаємо навчання моделі аномалій на {len(X_scaled)} семплах...")
     try:
-        model.fit(X_anomaly_scaled)
+        model.fit(X_scaled)
         logger.info(
             "Навчання моделі аномалій завершено.")
     except Exception as e:
@@ -227,12 +196,10 @@ def train_anomaly_model(df, initial_features_for_anomaly, contamination=None):
             f"Помилка при навчанні моделі аномалій: {e}")
         return None, None
 
-    anomaly_scores = model.decision_function(X_anomaly_scaled)
-    predictions = model.predict(X_anomaly_scaled)
-
-    if 'is_anomaly' in df_extended.columns:
-        true_labels = df_extended['is_anomaly'].astype(int)
-        pred_labels = (predictions == -1).astype(int)
+    # Оцінка моделі (якщо є мітки)
+    if 'is_anomaly' in df.columns:
+        true_labels = df['is_anomaly'].astype(int)
+        pred_labels = (model.predict(X_scaled) == -1).astype(int)
         if true_labels.sum() == 0 and pred_labels.sum() == 0:
             logger.info(
                 "Немає аномалій. Метрики не застосовуються.")
@@ -368,7 +335,8 @@ if __name__ == "__main__":
                 ]
                 for text in sample_texts:
                     predicted_category = predict_category(
-                        text, category_model, vectorizer_or_name, label_encoder, use_transformers=False)
+                        text, category_model, vectorizer_or_name, label_encoder, use_transformers=False
+                    )
                     logger.info(
                         f"'{text}' -> Категорія: {predicted_category}")
 
@@ -385,17 +353,12 @@ if __name__ == "__main__":
             if anomaly_model and anomaly_scaler:
                 logger.info(
                     "\n--- Тестування моделі аномалій ---")
-                all_anomaly_features = features_for_anomaly + \
-                    ['mean_amount_by_category', 'amount_deviation',
-                        'transaction_count_per_day']
                 normal_tx = pd.Series({
-                    'amount': -500.0, 'hour_of_day': 12, 'day_of_week': 2, 'month': 7, 'is_weekend': 0,
-                    'mean_amount_by_category': -450.0, 'amount_deviation': -50.0, 'transaction_count_per_day': 15
-                }, index=all_anomaly_features)
+                    'amount': -500.0, 'hour_of_day': 12, 'day_of_week': 2, 'month': 7, 'is_weekend': 0
+                }, index=features_for_anomaly)
                 anomaly_tx = pd.Series({
-                    'amount': -50000.0, 'hour_of_day': 3, 'day_of_week': 0, 'month': 1, 'is_weekend': 0,
-                    'mean_amount_by_category': -450.0, 'amount_deviation': -49550.0, 'transaction_count_per_day': 2
-                }, index=all_anomaly_features)
+                    'amount': -50000.0, 'hour_of_day': 3, 'day_of_week': 0, 'month': 1, 'is_weekend': 0
+                }, index=features_for_anomaly)
 
                 logger.info(
                     f"Нормальна транзакція: {predict_anomaly(normal_tx, anomaly_model, anomaly_scaler)}")
