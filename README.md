@@ -43,6 +43,10 @@ smart-transaction-analyzer/
 
 ## 🚀 Швидкий старт
 
+🌟 **Спробуйте додаток онлайн без встановлення!**
+
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://smart-transaction-analyzer-ndgzvuf45be2ji78kfhluk.streamlit.app/)
+
 ### Встановлення
 
 1. **Клонуйте репозиторій**
